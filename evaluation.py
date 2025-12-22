@@ -16,7 +16,7 @@ def evaluate(model, X_test, y_test, gestures, model_type, model_path):
     device = next(model.parameters()).device
     model.load_state_dict(torch.load(model_path, map_location=device))
 
-    save_dir = './model/'
+    save_dir = f'./model/{model_type}/'
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -47,7 +47,7 @@ def evaluate(model, X_test, y_test, gestures, model_type, model_path):
         plt.title(f'Confusion Matrix - {model_type}')
         plt.xlabel('Predicted')
         plt.ylabel('True')
-        plt.savefig(f"{save_dir}{model_type}_confusion_matrix.png")
+        plt.savefig(f"{save_dir}confusion_matrix.png")
         plt.show()
 
         # 2. Classification Report
@@ -57,14 +57,14 @@ def evaluate(model, X_test, y_test, gestures, model_type, model_path):
         print("\nClassification Report:")
         print(report_text)
 
-        with open(f"{save_dir}{model_type}_classification_report.txt", "w") as f:
+        with open(f"{save_dir}classification_report.txt", "w") as f:
             f.write(f"Final Test Loss: {test_loss.item():.4f}, Test Accuracy: {accuracy.item():.4f}\n")
             f.write(report_text)
 
         plt.figure(figsize=(10, 6))
         sns.heatmap(pd.DataFrame(class_report_dict).iloc[:-1, :].T, annot=True, cmap='Blues')
         plt.title(f'Classification Report - {model_type}')
-        plt.savefig(f"{save_dir}{model_type}_classification_heatmap.png")
+        plt.savefig(f"{save_dir}classification_heatmap.png")
         plt.show()
 
 
@@ -76,7 +76,8 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    MODEL_PATH = f'./model/{MODEL_TYPE.lower()}_epoch_81.pth'
+    model_dir = f'./model/{MODEL_TYPE}/'
+    MODEL_PATH = f'{model_dir}best_model.pth'
 
     X_raw = np.load('X_TRAIN_01.npy')
     y_raw = np.load('y_TRAIN_01.npy')

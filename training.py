@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 import torch
 import torch.nn as nn
@@ -47,15 +48,20 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
     history = {'train_loss': [], 'test_loss': [], 'train_acc': [], 'test_acc': []}
     top_3_models = []
 
+    model_dir = f'./model/{model_type}/'
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+
     patience = 15  # Stop if test loss doesn't improve for 15 epochs
     best_test_loss = float('inf')
     early_stop_counter = 0
+    best_overall_score = (-1, float('-inf'))
+    final_best_path = f'{model_dir}best_model.pth'
 
     # Prefix for model saving based on class name
-    model_prefix = f'./model/{model_type.lower()}_epoch_'
+    model_prefix = f'{model_dir}epoch_'
 
-    if not os.path.exists('./model'):
-        os.makedirs('./model')
+    start_time = time.time()
 
     for epoch in range(num_epochs):
         model.train()
@@ -91,6 +97,10 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
         # 1. Primary Metric: Test Accuracy | 2. Secondary Metric: Test Loss (tie-breaker)
         current_score = (test_acc.item(), -test_loss.item())  # Lower loss is better, hence negative for sorting
 
+        if current_score > best_overall_score:
+            best_overall_score = current_score
+            torch.save(model.state_dict(), final_best_path)
+
         if len(top_3_models) < 3 or current_score > top_3_models[0][0]:
             current_epoch = epoch + 1
             current_model_path = f"{model_prefix}{current_epoch}.pth"
@@ -120,6 +130,9 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
         if (epoch + 1) % 10 == 0:
             print(f'Epoch [{epoch + 1}/{num_epochs}] Loss: {loss.item():.4f} Test Acc: {test_acc.item():.4f}')
 
+    end_time = time.time()
+    total_time = end_time - start_time
+
     # Plotting code remains same as LSTM.py
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
@@ -141,12 +154,13 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
     plt.grid(True)
     plt.tight_layout()
 
-    save_path = f"./model/{model_type.lower()}_learning_curves.png"
+    save_path = f"{model_dir}learning_curves.png"
     plt.savefig(save_path)
 
     plt.show()
 
     print("\nTraining Complete.")
+    print(f"Total Training Time: {total_time:.2f} seconds")
     print("Top 3 Models saved (by epoch):")
     for acc, ep, path in sorted(top_3_models, key=lambda x: x[1]):
         print(f"- {path} (Accuracy: {acc[0]:.4f})")
