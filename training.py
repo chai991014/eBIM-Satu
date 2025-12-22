@@ -1,5 +1,6 @@
 import os
 import time
+from tqdm import tqdm
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,7 +12,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import mediapipe as mp
-from model import CustomLSTM, STGCNModel, CTRGCNModel
+from model import CustomLSTM, STGCNModel, CTRGCNModel, SkateFormerModel
 
 
 # --- STGCN Helpers ---
@@ -42,15 +43,17 @@ def reshape_for_stgcn(X):
     return X_new.transpose(0, 3, 1, 2)
 
 
-def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
+def train(model, model_type, train_loader, test_loader, device, num_epochs=200):
     optimizer = optim.Adam(model.parameters())
     criterion = nn.CrossEntropyLoss()
-    history = {'train_loss': [], 'test_loss': [], 'train_acc': [], 'test_acc': []}
-    top_3_models = []
+    scaler = torch.cuda.amp.GradScaler()
 
     model_dir = f'./model/{model_type}/'
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
+
+    history = {'train_loss': [], 'test_loss': [], 'train_acc': [], 'test_acc': []}
+    top_3_models = []
 
     patience = 15  # Stop if test loss doesn't improve for 15 epochs
     best_test_loss = float('inf')
@@ -58,7 +61,6 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
     best_overall_score = (-1, float('-inf'))
     final_best_path = f'{model_dir}best_model.pth'
 
-    # Prefix for model saving based on class name
     model_prefix = f'{model_dir}epoch_'
 
     start_time = time.time()
@@ -69,12 +71,17 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
         correct_train = 0
         total_train = 0
 
-        for batch_X, batch_y in train_loader:
+        for i, (batch_X, batch_y) in tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch+1}", leave=False):
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
-            outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
-            optimizer.step()
+
+            with torch.cuda.amp.autocast():
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += loss.item()
             correct_train += (outputs.argmax(dim=1) == batch_y.argmax(dim=1)).sum().item()
@@ -84,18 +91,26 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
         epoch_acc = correct_train / total_train
 
         model.eval()
+        running_test_loss = 0.0
+        correct_test = 0
         with torch.no_grad():
-            test_outputs = model(X_test)
-            test_loss = criterion(test_outputs, y_test)
-            test_acc = (test_outputs.argmax(dim=1) == y_test.argmax(dim=1)).float().mean()
+            for b_x, b_y in test_loader:
+                b_x, b_y = b_x.to(device), b_y.to(device)
+                with torch.cuda.amp.autocast():
+                    out = model(b_x)
+                    running_test_loss += criterion(out, b_y).item() * b_x.size(0)
+                    correct_test += (out.argmax(1) == b_y.argmax(1)).sum().item()
+
+        test_loss = running_test_loss / len(test_loader.dataset)
+        test_acc = correct_test / len(test_loader.dataset)
 
         history['train_loss'].append(epoch_loss)
-        history['test_loss'].append(test_loss.item())
+        history['test_loss'].append(test_loss)
         history['train_acc'].append(epoch_acc)
-        history['test_acc'].append(test_acc.item())
+        history['test_acc'].append(test_acc)
 
         # 1. Primary Metric: Test Accuracy | 2. Secondary Metric: Test Loss (tie-breaker)
-        current_score = (test_acc.item(), -test_loss.item())  # Lower loss is better, hence negative for sorting
+        current_score = (test_acc, -test_loss)  # Lower loss is better, hence negative for sorting
 
         if current_score > best_overall_score:
             best_overall_score = current_score
@@ -117,8 +132,8 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
                 if os.path.exists(worst_path):
                     os.remove(worst_path)
 
-        if test_loss.item() < best_test_loss:
-            best_test_loss = test_loss.item()
+        if test_loss < best_test_loss:
+            best_test_loss = test_loss
             early_stop_counter = 0  # Reset if we find a new best loss
         else:
             early_stop_counter += 1  # Increment if loss doesn't improve
@@ -127,8 +142,9 @@ def train(model, model_type, train_loader, X_test, y_test, num_epochs=200):
             print(f'\nEarly stopping triggered at epoch {epoch + 1}!')
             break
 
-        if (epoch + 1) % 10 == 0:
-            print(f'Epoch [{epoch + 1}/{num_epochs}] Loss: {loss.item():.4f} Test Acc: {test_acc.item():.4f}')
+        # if (epoch + 1) % 10 == 0:
+        #     print(f'Epoch [{epoch + 1}/{num_epochs}] Loss: {loss.item():.4f} Test Acc: {test_acc.item():.4f}')
+        print(f'Epoch [{epoch + 1}/{num_epochs}] Loss: {loss.item():.4f} Test Acc: {test_acc:.4f}')
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -170,7 +186,8 @@ if __name__ == "__main__":
 
     # MODEL_TYPE = "LSTM"
     # MODEL_TYPE = "STGCN"
-    MODEL_TYPE = "CTRGCN"
+    # MODEL_TYPE = "CTRGCN"
+    MODEL_TYPE = "SKATEFORMER"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -179,24 +196,28 @@ if __name__ == "__main__":
     gestures = np.load("gestures_01.npy")
 
     if MODEL_TYPE == "LSTM":
-        X_tensor = torch.tensor(X_raw, dtype=torch.float32).to(device)
+        X_tensor = torch.tensor(X_raw, dtype=torch.float32)
         model = CustomLSTM(input_size=258, hidden_size=64, num_classes=len(gestures)).to(device)
     else:
-        X_tensor = torch.tensor(reshape_for_stgcn(X_raw), dtype=torch.float32).to(device)
+        X_tensor = torch.tensor(reshape_for_stgcn(X_raw), dtype=torch.float32)
         if MODEL_TYPE == "STGCN":
             model = STGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
         elif MODEL_TYPE == "CTRGCN":
             model = CTRGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
+        elif MODEL_TYPE == "SKATEFORMER":
+            model = SkateFormerModel(num_classes=len(gestures)).to(device)
         else:
             print("Model Not Found !")
             exit()
 
-    y_tensor = torch.tensor(y_raw, dtype=torch.long).to(device)
+    y_tensor = torch.tensor(y_raw, dtype=torch.long)
     y_one_hot = F.one_hot(y_tensor).float()
     X_train, X_test, y_train, y_test = train_test_split(X_tensor, y_one_hot, test_size=0.05)
 
     batch_size = 16  # Adjust this (16 or 32) based on your memory
     train_data = TensorDataset(X_train, y_train)
+    test_data = TensorDataset(X_test, y_test)
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_data, batch_size=8)
 
-    train(model, MODEL_TYPE, train_loader, X_test, y_test)
+    train(model, MODEL_TYPE, train_loader, test_loader, device)

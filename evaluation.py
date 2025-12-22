@@ -7,7 +7,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.model_selection import train_test_split
-from model import CustomLSTM, STGCNModel, CTRGCNModel
+from model import CustomLSTM, STGCNModel, CTRGCNModel, SkateFormerModel
 from training import get_adjacency_matrix, reshape_for_stgcn
 
 
@@ -72,7 +72,8 @@ if __name__ == "__main__":
 
     # MODEL_TYPE = "LSTM"
     # MODEL_TYPE = "STGCN"
-    MODEL_TYPE = "CTRGCN"
+    # MODEL_TYPE = "CTRGCN"
+    MODEL_TYPE = "SKATEFORMER"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -92,6 +93,8 @@ if __name__ == "__main__":
             model = STGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
         elif MODEL_TYPE == "CTRGCN":
             model = CTRGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
+        elif MODEL_TYPE == "SKATEFORMER":
+            model = SkateFormerModel(num_classes=len(gestures)).to(device)
         else:
             print("Model Not Found !")
             exit()

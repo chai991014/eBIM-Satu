@@ -139,3 +139,81 @@ class CTRGCNModel(nn.Module):
         x = F.avg_pool2d(x, x.size()[2:])
         x = x.view(x.size(0), -1)
         return self.fc(x)
+
+
+class FactorizedAttention(nn.Module):
+    """
+    Processes Temporal and Spatial dimensions separately to reduce
+    complexity from O((T*V)^2) to O(V*T^2 + T*V^2).
+    """
+
+    def __init__(self, embed_dim, num_heads, dropout=0.1):
+        super().__init__()
+        self.temp_attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True, dropout=dropout)
+        self.spat_attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True, dropout=dropout)
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 2),
+            nn.ReLU(),
+            nn.Linear(embed_dim * 2, embed_dim)
+        )
+        self.norm3 = nn.LayerNorm(embed_dim)
+
+    def forward(self, x, T, V):
+        # x shape: (N, T, V, C)
+        N, _, _, C = x.shape
+
+        # 1. Temporal Attention: (N*V, T, C)
+        xt = x.permute(0, 2, 1, 3).reshape(N * V, T, C)
+        attn_t, _ = self.temp_attn(xt, xt, xt)
+        x = x + attn_t.view(N, V, T, C).permute(0, 2, 1, 3)
+        x = self.norm1(x)
+
+        # 2. Spatial Attention: (N*T, V, C)
+        xs = x.reshape(N * T, V, C)
+        attn_s, _ = self.spat_attn(xs, xs, xs)
+        x = x + attn_s.view(N, T, V, C)
+        x = self.norm2(x)
+
+        # 3. Feed Forward
+        x = x + self.ffn(x)
+        x = self.norm3(x)
+        return x
+
+
+class SkateFormerModel(nn.Module):
+    def __init__(self, num_classes, num_joints=75, seq_len=30, embed_dim=128, num_heads=8):
+        super(SkateFormerModel, self).__init__()
+        self.T = seq_len
+        self.V = num_joints
+
+        self.input_embed = nn.Linear(3, embed_dim)
+        # Position embedding for Time and Space
+        self.temp_embed = nn.Parameter(torch.zeros(1, seq_len, 1, embed_dim))
+        self.spat_embed = nn.Parameter(torch.zeros(1, 1, num_joints, embed_dim))
+
+        # Two factorized layers are usually enough for small datasets
+        self.layer1 = FactorizedAttention(embed_dim, num_heads)
+        self.layer2 = FactorizedAttention(embed_dim, num_heads)
+
+        self.fc = nn.Sequential(
+            nn.Linear(embed_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes)
+        )
+
+    def forward(self, x):
+        # x: (N, 3, T, V)
+        N, C, T, V = x.shape
+        x = x.permute(0, 2, 3, 1)  # (N, T, V, 3)
+        x = self.input_embed(x)
+        x = x + self.temp_embed + self.spat_embed
+
+        x = self.layer1(x, T, V)
+        x = self.layer2(x, T, V)
+
+        # Global Average Pool
+        x = x.mean(dim=[1, 2])
+        return self.fc(x)
