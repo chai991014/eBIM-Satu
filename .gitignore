@@ -1,3 +1,6 @@
 __pycache__/
 .idea/
-BIM Dataset V3/
+BIM_Dataset_V3/
+datasets/
+model/
+*.npy
