@@ -1,6 +1,7 @@
+import os
+import sys
 import cv2
 import numpy as np
-import os
 import mediapipe as mp
 
 mp_holistic = mp.solutions.holistic  # Holistic model
@@ -85,38 +86,36 @@ def detect_hand_landmarks(image_path):
         cv2.destroyAllWindows()
 
 
-def process_video_frame(gestures, train_dataset_path):
-    for ges in gestures:
+def process_video_frame(gestures, video_directory, train_dataset_path):
+    with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
+        for ges in gestures:
+            # Specify the video path
+            data_path = os.path.join(video_directory, ges)
+            data_video = os.listdir(data_path)
 
-        # Specify the video path
-        data_path = os.path.join(video_directory, ges)
-        data_video = os.listdir(data_path)
+            for vid in data_video:
 
-        for vid in data_video:
+                if not os.path.exists(os.path.join(train_dataset_path)):
+                    os.makedirs(train_dataset_path)
 
-            if not os.path.exists(os.path.join(train_dataset_path)):
-                os.makedirs(train_dataset_path)
+                video_path = os.path.join(video_directory, ges, vid)
+                print(video_path)
 
-            landmark_path = os.path.join(train_dataset_path, ges, 'landmarks' + vid)
-            video_path = os.path.join(video_directory, ges, vid)
-            print(video_path)
+                for aug in AUG:
 
-            for aug in AUG:
+                    # Update folder name to distinguish between original, rotated, and scaled
+                    # e.g., 'landmarks_rot10_video_name'
+                    folder_name = 'landmarks_' + aug['name'] + '_' + vid
+                    landmark_path = os.path.join(train_dataset_path, ges, folder_name)
 
-                # Update folder name to distinguish between original, rotated, and scaled
-                # e.g., 'landmarks_rot10_video_name'
-                folder_name = 'landmarks_' + aug['name'] + '_' + vid
-                landmark_path = os.path.join(train_dataset_path, ges, folder_name)
+                    # Locate the video dataset (Must re-open video for each augmentation pass)
+                    video = cv2.VideoCapture(video_path)
+                    all_video_frames = []
 
-                # Locate the video dataset (Must re-open video for each augmentation pass)
-                video = cv2.VideoCapture(video_path)
-                all_video_frames = []
+                    count = 0
+                    frame_count = 0
 
-                count = 0
-                frame_count = 0
-
-                # Set mediapipe model
-                with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
+                    # Set mediapipe model
                     while True:
                         ret, frame = video.read()
 
@@ -137,21 +136,21 @@ def process_video_frame(gestures, train_dataset_path):
                         keypoints = extract_keypoints(results)
                         all_video_frames.append(keypoints)
 
-                video.release()
+                    video.release()
 
-                # Resampling Logic: Scale any video length to exactly 30 frames
-                total_captured = len(all_video_frames)
-                if total_captured > 0:
-                    if not os.path.exists(landmark_path):
-                        os.makedirs(landmark_path)
+                    # Resampling Logic: Scale any video length to exactly 30 frames
+                    total_captured = len(all_video_frames)
+                    if total_captured > 0:
+                        if not os.path.exists(landmark_path):
+                            os.makedirs(landmark_path)
 
-                    # Pick 30 indices evenly spaced across the entire video
-                    indices = np.linspace(0, total_captured - 1, 30).astype(int)
+                        # Pick 30 indices evenly spaced across the entire video
+                        indices = np.linspace(0, total_captured - 1, 30).astype(int)
 
-                    for i, idx in enumerate(indices):
-                        res = all_video_frames[idx]
-                        npy_path = os.path.join(landmark_path, str(i))
-                        np.save(npy_path, res)
+                        for i, idx in enumerate(indices):
+                            res = all_video_frames[idx]
+                            npy_path = os.path.join(landmark_path, str(i))
+                            np.save(npy_path, res)
 
 
 def compose_train_data(gestures, train_dataset_path):
@@ -221,6 +220,10 @@ if __name__ == "__main__":
            {'name': 'scaleup', 'angle': 0, 'scale': 1.2},
            {'name': 'scaledown', 'angle': 0, 'scale': 0.8}]
 
-    process_video_frame(gestures, train_dataset_path)
+    _stderr = sys.stderr
+    with open(os.devnull, 'w') as f:
+        sys.stderr = f
+        process_video_frame(gestures, video_directory, train_dataset_path)
+        sys.stderr = _stderr
 
     compose_train_data(gestures, train_dataset_path)

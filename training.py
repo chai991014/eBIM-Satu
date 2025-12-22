@@ -191,9 +191,9 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    X_raw = np.load('X_TRAIN_01.npy')
-    y_raw = np.load('y_TRAIN_01.npy')
-    gestures = np.load("gestures_01.npy")
+    X_raw = np.load('X_TRAIN_3.npy')
+    y_raw = np.load('y_TRAIN_3.npy')
+    gestures = np.load("gestures_3.npy")
 
     if MODEL_TYPE == "LSTM":
         X_tensor = torch.tensor(X_raw, dtype=torch.float32)

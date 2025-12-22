@@ -80,9 +80,9 @@ if __name__ == "__main__":
     model_dir = f'./model/{MODEL_TYPE}/'
     MODEL_PATH = f'{model_dir}best_model.pth'
 
-    X_raw = np.load('X_TRAIN_01.npy')
-    y_raw = np.load('y_TRAIN_01.npy')
-    gestures = np.load("gestures_01.npy")
+    X_raw = np.load('X_TRAIN_3.npy')
+    y_raw = np.load('y_TRAIN_3.npy')
+    gestures = np.load("gestures_3.npy")
 
     if MODEL_TYPE == "LSTM":
         X_tensor = torch.tensor(X_raw, dtype=torch.float32).to(device)
