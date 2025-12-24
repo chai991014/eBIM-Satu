@@ -86,7 +86,184 @@ def detect_hand_landmarks(image_path):
         cv2.destroyAllWindows()
 
 
+def apply_skeletal_shrink(data, shrink_range=(0.20, 0.35)):
+    """
+    Shrinks the entire skeleton (Pose + Hands) towards the center to perfectly simulate child proportions.
+    """
+    aug_data = np.copy(data)
+    # Randomly decide how much to 'shrink' for this specific sample
+    shrink_factor = np.random.uniform(shrink_range[0], shrink_range[1])
+
+    for f in range(aug_data.shape[0]):
+        # 1. Calculate the 'Pivot Y' (Shoulder height) for this frame
+        # Shoulder indices: 11 (left), 12 (right). Y is the 2nd value (idx*4 + 1)
+        sh_y_avg = (aug_data[f, 11 * 4 + 1] + aug_data[f, 12 * 4 + 1]) / 2
+
+        # 2. Unified Shrink Logic: Move all X towards 0.5, all Y towards sh_y_avg
+
+        # Part A: Pose Landmarks (33 joints, 4 values each: x,y,z,v)
+        for i in range(33):
+            x_idx, y_idx = i * 4, i * 4 + 1
+            aug_data[f, x_idx] = aug_data[f, x_idx] + (0.5 - aug_data[f, x_idx]) * shrink_factor
+            aug_data[f, y_idx] = aug_data[f, y_idx] - (aug_data[f, y_idx] - sh_y_avg) * shrink_factor
+
+        # Part B: Hand Landmarks (42 joints total, 3 values each: x,y,z)
+        # Left Hand (132-194) and Right Hand (195-257)
+        for i in range(132, 258, 3):
+            x_idx, y_idx = i, i + 1
+            aug_data[f, x_idx] = aug_data[f, x_idx] + (0.5 - aug_data[f, x_idx]) * shrink_factor
+            aug_data[f, y_idx] = aug_data[f, y_idx] - (aug_data[f, y_idx] - sh_y_avg) * shrink_factor
+
+    return aug_data
+
+
+def adjust_shoulder_width(data, intensity=0.04):
+    """Simulates broader or narrower shoulders."""
+    aug_data = np.copy(data)
+    # Randomly decide width change for this sample
+    # shift_x = np.random.uniform(-intensity, intensity)
+    shift_x = - intensity
+    for f in range(aug_data.shape[0]):
+        # Left Shoulder (11) moves left/right
+        aug_data[f, 11 * 4] -= shift_x
+        # Right Shoulder (12) moves opposite direction
+        aug_data[f, 12 * 4] += shift_x
+    return aug_data
+
+
+def adjust_arm_length(data, intensity=0.20):
+    """Simulates longer or shorter humerus/forearm."""
+    aug_data = np.copy(data)
+    # Extension factor: >1 is longer, <1 is shorter
+    ext_factor = np.random.uniform(1.0 - intensity, 1.0 + intensity)
+
+    for f in range(data.shape[0]):
+        # 1. Update Pose Elbows (13, 14) relative to Shoulders
+        for s, e in [(11, 13), (12, 14)]:
+            aug_data[f, e * 4] = data[f, s * 4] + (data[f, e * 4] - data[f, s * 4]) * ext_factor
+            aug_data[f, e * 4 + 1] = data[f, s * 4 + 1] + (data[f, e * 4 + 1] - data[f, s * 4 + 1]) * ext_factor
+
+        # 2. Update ALL Pose hand-end landmarks (15-22) relative to the NEW Elbows
+        # This fixes the floating 18, 20, 22 you see in your debug video.
+        left_hand_pose = [15, 17, 19, 21]
+        right_hand_pose = [16, 18, 20, 22]
+
+        # Left Side
+        new_el_l_x, new_el_l_y = aug_data[f, 13 * 4], aug_data[f, 13 * 4 + 1]
+        for p_idx in left_hand_pose:
+            orig_vec_x = data[f, p_idx * 4] - data[f, 13 * 4]
+            orig_vec_y = data[f, p_idx * 4 + 1] - data[f, 13 * 4 + 1]
+            aug_data[f, p_idx * 4] = new_el_l_x + (orig_vec_x * ext_factor)
+            aug_data[f, p_idx * 4 + 1] = new_el_l_y + (orig_vec_y * ext_factor)
+
+        # Right Side
+        new_el_r_x, new_el_r_y = aug_data[f, 14 * 4], aug_data[f, 14 * 4 + 1]
+        for p_idx in right_hand_pose:
+            orig_vx = data[f, p_idx * 4] - data[f, 14 * 4]
+            orig_vy = data[f, p_idx * 4 + 1] - data[f, 14 * 4 + 1]
+            aug_data[f, p_idx * 4] = new_el_r_x + (orig_vx * ext_factor)
+            aug_data[f, p_idx * 4 + 1] = new_el_r_y + (orig_vy * ext_factor)
+
+        # 3. SNAP ACTUAL HAND DATA TO THE NEW POSE WRIST
+        # Now that Pose 15 and 16 are moved correctly, the hand landmarks will follow.
+        l_shift_x = aug_data[f, 15 * 4] - data[f, 132]
+        l_shift_y = aug_data[f, 15 * 4 + 1] - data[f, 133]
+        for j in range(21):
+            aug_data[f, 132 + (j * 3)] = data[f, 132 + (j * 3)] + l_shift_x
+            aug_data[f, 132 + (j * 3) + 1] = data[f, 133 + (j * 3)] + l_shift_y
+
+        r_shift_x = aug_data[f, 16 * 4] - data[f, 195]
+        r_shift_y = aug_data[f, 16 * 4 + 1] - data[f, 196]
+        for j in range(21):
+            aug_data[f, 195 + (j * 3)] = data[f, 195 + (j * 3)] + r_shift_x
+            aug_data[f, 195 + (j * 3) + 1] = data[f, 196 + (j * 3)] + r_shift_y
+
+    return aug_data
+
+
+def adjust_torso_height(data, intensity=0.05):
+    """Simulates a longer or shorter upper body."""
+    aug_data = np.copy(data)
+    # shift_y = np.random.uniform(-intensity, intensity)
+    shift_y = - intensity
+    for f in range(aug_data.shape[0]):
+        # Move Shoulders, Elbows, and Wrists as a block relative to the hips
+        for i in range(11, 23):
+            aug_data[f, i * 4 + 1] += shift_y
+
+        # Snap Hands
+        l_gap_x, l_gap_y = aug_data[f, 60] - aug_data[f, 132], aug_data[f, 61] - aug_data[f, 133]
+        r_gap_x, r_gap_y = aug_data[f, 64] - aug_data[f, 195], aug_data[f, 65] - aug_data[f, 196]
+        for j in range(21):
+            aug_data[f, 132 + (j * 3)] += l_gap_x;
+            aug_data[f, 132 + (j * 3) + 1] += l_gap_y
+            aug_data[f, 195 + (j * 3)] += r_gap_x;
+            aug_data[f, 195 + (j * 3) + 1] += r_gap_y
+    return aug_data
+
+
+def rotate_skeleton(data, angle_range=(-10, 10)):
+    """
+    Rotates the x,y coordinates around the center (0.5, 0.5).
+    """
+    angle = np.radians(np.random.uniform(angle_range[0], angle_range[1]))
+    cos_val, sin_val = np.cos(angle), np.sin(angle)
+
+    aug_data = np.copy(data)
+    # Reshape to (frames, num_keypoints, coordinates)
+    # Your keypoints have x, y, z (and visibility for pose)
+    for f in range(aug_data.shape[0]):
+        # Pose (33 joints, first 132 values: x,y,z,v)
+        for i in range(33):
+            x, y = aug_data[f, i * 4] - 0.5, aug_data[f, i * 4 + 1] - 0.5
+            aug_data[f, i * 4] = x * cos_val - y * sin_val + 0.5
+            aug_data[f, i * 4 + 1] = x * sin_val + y * cos_val + 0.5
+
+        # Left Hand (21 joints, 132-194: x,y,z) & Right Hand (195-257: x,y,z)
+        for i in range(132, 258, 3):
+            x, y = aug_data[f, i] - 0.5, aug_data[f, i + 1] - 0.5
+            aug_data[f, i] = x * cos_val - y * sin_val + 0.5
+            aug_data[f, i + 1] = x * sin_val + y * cos_val + 0.5
+    return aug_data
+
+
+def scale_skeleton(data, scale_range=(0.8, 1.2)):
+    """
+    Scales the skeleton to simulate signer being closer or further.
+    """
+    # scale = np.random.uniform(scale_range[0], scale_range[1])
+    scale = scale_range[1]
+    aug_data = np.copy(data)
+
+    # Scale x and y relative to center 0.5
+    # Pose x,y
+    for i in range(33):
+        aug_data[:, i * 4] = (aug_data[:, i * 4] - 0.5) * scale + 0.5
+        aug_data[:, i * 4 + 1] = (aug_data[:, i * 4 + 1] - 0.5) * scale + 0.5
+
+    # Hands x,y
+    for i in range(132, 258, 3):
+        aug_data[:, i] = (aug_data[:, i] - 0.5) * scale + 0.5
+        aug_data[:, i + 1] = (aug_data[:, i + 1] - 0.5) * scale + 0.5
+
+    return aug_data
+
+
+def mix_skeletal_parts(seq_a, seq_b):
+    """
+    Swaps hand landmarks of seq_b into seq_a.
+    Pose: 0-131 | Hands: 132-257
+    """
+    mixed_seq = np.copy(seq_a)
+    mixed_seq[:, 132:] = seq_b[:, 132:]
+    return mixed_seq
+
+
 def process_video_frame(gestures, video_directory, train_dataset_path):
+    """
+    REMOVED: Internal AUG loop and image-level rotation/scaling.
+    Now only processes the 'original' video once to save time.
+    """
     with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
         for ges in gestures:
             # Specify the video path
@@ -100,103 +277,146 @@ def process_video_frame(gestures, video_directory, train_dataset_path):
 
                 video_path = os.path.join(video_directory, ges, vid)
                 print(video_path)
+                # We only save the 'original' landmarks now. Augmentation happens in compose_train_data.
+                landmark_path = os.path.join(train_dataset_path, ges, 'landmarks_' + vid)
 
-                for aug in AUG:
+                if os.path.exists(landmark_path):
+                    continue  # Skip if already processed
 
-                    # Update folder name to distinguish between original, rotated, and scaled
-                    # e.g., 'landmarks_rot10_video_name'
-                    folder_name = 'landmarks_' + aug['name'] + '_' + vid
-                    landmark_path = os.path.join(train_dataset_path, ges, folder_name)
+                video = cv2.VideoCapture(video_path)
+                all_video_frames = []
+                while True:
+                    ret, frame = video.read()
 
-                    # Locate the video dataset (Must re-open video for each augmentation pass)
-                    video = cv2.VideoCapture(video_path)
-                    all_video_frames = []
+                    if not ret:
+                        # Break the loop if there are no more frames
+                        break
+                    # Make detections
+                    image, results = mediapipe_detection(frame, holistic)
 
-                    count = 0
-                    frame_count = 0
+                    # Extract keypoints for every frame to preserve timing
+                    keypoints = extract_keypoints(results)
+                    all_video_frames.append(keypoints)
 
-                    # Set mediapipe model
-                    while True:
-                        ret, frame = video.read()
+                video.release()
 
-                        if not ret:
-                            # Break the loop if there are no more frames
-                            break
+                # Resampling Logic: Scale any video length to exactly 30 frames
+                total_captured = len(all_video_frames)
+                if total_captured > 0:
+                    if not os.path.exists(landmark_path):
+                        os.makedirs(landmark_path)
 
-                        if aug['name'] != 'original':
-                            frame = augment_image(frame, angle=aug['angle'], scale=aug['scale'])
+                    # Pick 30 indices evenly spaced across the entire video
+                    indices = np.linspace(0, total_captured - 1, 30).astype(int)
 
-                        # Make detections
-                        image, results = mediapipe_detection(frame, holistic)
-
-                        # Draw landmarks to the frame
-                        draw_styled_landmarks(image, results)
-
-                        # Extract keypoints for every frame to preserve timing
-                        keypoints = extract_keypoints(results)
-                        all_video_frames.append(keypoints)
-
-                    video.release()
-
-                    # Resampling Logic: Scale any video length to exactly 30 frames
-                    total_captured = len(all_video_frames)
-                    if total_captured > 0:
-                        if not os.path.exists(landmark_path):
-                            os.makedirs(landmark_path)
-
-                        # Pick 30 indices evenly spaced across the entire video
-                        indices = np.linspace(0, total_captured - 1, 30).astype(int)
-
-                        for i, idx in enumerate(indices):
-                            res = all_video_frames[idx]
-                            npy_path = os.path.join(landmark_path, str(i))
-                            np.save(npy_path, res)
+                    for i, idx in enumerate(indices):
+                        res = all_video_frames[idx]
+                        npy_path = os.path.join(landmark_path, str(i))
+                        np.save(npy_path, res)
 
 
-def compose_train_data(gestures, train_dataset_path):
+def compose_train_data(gestures, train_dataset_path, target_samples=150):
+    """
+    Includes Automatic Oversampling, Undersampling, Part Mixing, and Shoulder Noise.
+    """
     label_map = {label: num for num, label in enumerate(gestures)}
+    X_train, y_train = [], []
+    X_val, y_val = [], []
+    X_test, y_test = [], []
 
-    gesture_sequence, labels = [], []
+    T_TRAIN = int(target_samples * 0.7)
+    T_VAL = int(target_samples * 0.1)
+    T_TEST = target_samples - (T_TRAIN + T_VAL)
 
     for gs in gestures:
-        gesture = []
+        gesture_samples = []
+        class_path = os.path.join(train_dataset_path, gs)
 
-        for fname in os.listdir(os.path.join(train_dataset_path, gs)):
-            path = os.path.join(train_dataset_path, gs, fname)
-            if os.path.isdir(path):
-                gesture.append(fname)
+        # Load all available 'original' samples for this class
+        folder_names = [d for d in os.listdir(class_path) if os.path.isdir(os.path.join(class_path, d))]
 
-        for no in gesture:
-            load_path = os.path.join(train_dataset_path, gs, no)
-            npy_files = sorted([f for f in os.listdir(load_path) if f.endswith('.npy')])
-            npy_files.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
+        for fname in folder_names:
+            load_path = os.path.join(class_path, fname)
+            npy_files = sorted([f for f in os.listdir(load_path) if f.endswith('.npy')],
+                               key=lambda f: int(''.join(filter(str.isdigit, f))))
+            video = [np.load(os.path.join(load_path, npy)) for npy in npy_files]
+            gesture_samples.append(np.array(video))
 
-            video = []
-            for npy in npy_files:
-                video.append(np.load(os.path.join(load_path, npy)))
-                print(os.path.join(load_path, npy))
+        num_orig = len(gesture_samples)
+        np.random.shuffle(gesture_samples)
 
-            gesture_sequence.append(video)
-            labels.append(label_map[gs])
+        # Split originals: 80% to train pool, 10% to val pool, 10% to test pool
+        idx80 = max(1, int(num_orig * 0.8))
+        idx90 = max(idx80 + 1, int(num_orig * 0.9))
 
-        # Calculate the maximum sequence length for this gesture
-        max_len = max(len(seq) for seq in gesture_sequence)
+        pool_train = gesture_samples[:idx80]
+        pool_val = gesture_samples[idx80:idx90]
+        pool_test = gesture_samples[idx90:]
 
-        # Pad shorter sequences with zeros to match the maximum length
-        gesture_sequence = [
-            seq + [[0] * seq[0].shape[0]] * (max_len - len(seq))  # Pad with zeros
-            for seq in gesture_sequence
-        ]
+        def augment_to_target(pool, target):
+            out = []
+            while len(out) < target:
+                idx = np.random.randint(0, len(pool))
+                aug_sample = np.copy(pool[idx])
+                # --- 1. ANATOMICAL DIVERSITY (Body Proportions) ---
+                # Applied first to set the 'base' skeleton shape
+                if np.random.random() < 0.4:
+                    aug_sample = adjust_shoulder_width(aug_sample)
+                if np.random.random() < 0.4:
+                    aug_sample = adjust_arm_length(aug_sample)
+                if np.random.random() < 0.3:  # Reduced slightly to prevent over-distortion
+                    aug_sample = adjust_torso_height(aug_sample)
 
-        print(np.array(gesture_sequence).shape, np.array(labels).shape)
+                # --- 2. AGE ADAPTATION (Global Scale) ---
+                if np.random.random() < 0.2:
+                    aug_sample = apply_skeletal_shrink(aug_sample)
 
-    X = np.array(gesture_sequence)
-    y = np.array(labels)
+                # --- 3. MOVEMENT STYLE (Part Mixing) ---
+                # Swaps movements between two skeletons in the same pool
+                if np.random.random() < 0.5:
+                    partner_idx = np.random.randint(0, len(pool))
+                    aug_sample = mix_skeletal_parts(aug_sample, pool[partner_idx])
 
-    np.save('X_TRAIN_02.npy', X)
-    np.save('y_TRAIN_02.npy', y)
+                # --- 4. ENVIRONMENTAL NOISE (Camera Zoom/Tilt) ---
+                # Applied last, so it rotates the final assembled skeleton
+                if np.random.random() < 0.6:
+                    aug_sample = rotate_skeleton(aug_sample)
+                if np.random.random() < 0.6:
+                    aug_sample = scale_skeleton(aug_sample)
 
-    np.save('gestures_02.npy', gestures)
+                out.append(aug_sample)
+            return out
+
+        X_train.extend(augment_to_target(pool_train, T_TRAIN))
+        y_train.extend([label_map[gs]] * T_TRAIN)
+
+        X_val.extend(augment_to_target(pool_val, T_VAL))
+        y_val.extend([label_map[gs]] * T_VAL)
+
+        X_test.extend(augment_to_target(pool_test, T_TEST))
+        y_test.extend([label_map[gs]] * T_TEST)
+
+        print(f"Class {gs}: Split created (Train:{T_TRAIN}, Val:{T_VAL}, Test:{T_TEST})")
+
+    save_dir = "datasets_npy"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    np.save(os.path.join(save_dir, 'X_train.npy'), np.array(X_train, dtype=np.float32))
+    np.save(os.path.join(save_dir, 'y_train.npy'), np.array(y_train, dtype=np.int32))
+
+    np.save(os.path.join(save_dir, 'X_val.npy'), np.array(X_val, dtype=np.float32))
+    np.save(os.path.join(save_dir, 'y_val.npy'), np.array(y_val, dtype=np.int32))
+
+    np.save(os.path.join(save_dir, 'X_test.npy'), np.array(X_test, dtype=np.float32))
+    np.save(os.path.join(save_dir, 'y_test.npy'), np.array(y_test, dtype=np.int32))
+
+    np.save(os.path.join(save_dir, 'gestures.npy'), np.array(gestures))
+
+    print(f"Dataset successfully saved to {save_dir}/")
+    print(f"X_train shape: {np.array(X_train).shape} | Total Samples: {len(X_train)}")
+    print(f"X_val shape: {np.array(X_val).shape} | Total Samples: {len(X_val)}")
+    print(f"X_test shape: {np.array(X_test).shape} | Total Samples: {len(X_test)}")
 
 
 if __name__ == "__main__":
@@ -214,16 +434,10 @@ if __name__ == "__main__":
     # Specify your path to store landmarks files
     train_dataset_path = 'datasets'
 
-    AUG = [{'name': 'original', 'angle': 0, 'scale': 1.0},
-           {'name': 'rotcw10', 'angle': -10, 'scale': 1.0},
-           {'name': 'rotacw10', 'angle': 10, 'scale': 1.0},
-           {'name': 'scaleup', 'angle': 0, 'scale': 1.2},
-           {'name': 'scaledown', 'angle': 0, 'scale': 0.8}]
-
-    _stderr = sys.stderr
-    with open(os.devnull, 'w') as f:
-        sys.stderr = f
-        process_video_frame(gestures, video_directory, train_dataset_path)
-        sys.stderr = _stderr
+    # _stderr = sys.stderr
+    # with open(os.devnull, 'w') as f:
+    #     sys.stderr = f
+    #     process_video_frame(gestures, video_directory, train_dataset_path)
+    #     sys.stderr = _stderr
 
     compose_train_data(gestures, train_dataset_path)

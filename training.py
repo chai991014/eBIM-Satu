@@ -7,12 +7,12 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.model_selection import train_test_split
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import mediapipe as mp
 from model import CustomLSTM, STGCNModel, CTRGCNModel, SkateFormerModel
+from utils import setup_logger
 
 
 # --- STGCN Helpers ---
@@ -43,31 +43,71 @@ def reshape_for_stgcn(X):
     return X_new.transpose(0, 3, 1, 2)
 
 
-def train(model, model_type, train_loader, test_loader, device, num_epochs=200):
-    optimizer = optim.Adam(model.parameters())
+class EarlyStopping:
+    """Early stops the training if validation loss doesn't improve after a given patience."""
+    def __init__(self, patience=20, delta=0.001, start_epoch=50, path='checkpoint.pth'):
+        self.patience = patience
+        self.start_epoch = start_epoch
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.inf
+        self.delta = delta
+        self.path = path
+        self.best_epoch = 0
+
+    def __call__(self, val_loss, model, epoch):
+        if epoch < self.start_epoch:
+            if val_loss < self.val_loss_min:
+                self.save_checkpoint(val_loss, model, epoch)
+            return
+
+        score = -val_loss
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model, epoch)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model, epoch)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model, epoch):
+        torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
+        self.best_epoch = epoch + 1
+
+
+def train(model, model_type, train_loader, val_loader, device, num_epochs=200):
+    optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     criterion = nn.CrossEntropyLoss()
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
 
     model_dir = f'./model/{model_type}/'
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
 
-    history = {'train_loss': [], 'test_loss': [], 'train_acc': [], 'test_acc': []}
-    top_3_models = []
+    log_file_path = setup_logger(model_dir, "training_session")
+    csv_log_path = os.path.join(model_dir, "metrics_log.csv")
+    with open(csv_log_path, "w") as f:
+        f.write("Epoch,Train_Loss,Train_Acc,Val_Loss,Val_Acc\n")
 
-    patience = 15  # Stop if test loss doesn't improve for 15 epochs
-    best_test_loss = float('inf')
-    early_stop_counter = 0
-    best_overall_score = (-1, float('-inf'))
     final_best_path = f'{model_dir}best_model.pth'
 
-    model_prefix = f'{model_dir}epoch_'
+    early_stopping = EarlyStopping(patience=PATIENCE, delta=DELTA, start_epoch=WARM_UP, path=final_best_path)
+
+    history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+
+    print(f"Start training for {model_type}...")
 
     start_time = time.time()
 
     for epoch in range(num_epochs):
         model.train()
-        running_loss = 0.0
+        train_loss = 0.0
         correct_train = 0
         total_train = 0
 
@@ -75,7 +115,7 @@ def train(model, model_type, train_loader, test_loader, device, num_epochs=200):
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
 
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast(device_type='cuda'):
                 outputs = model(batch_X)
                 loss = criterion(outputs, batch_y)
 
@@ -83,68 +123,43 @@ def train(model, model_type, train_loader, test_loader, device, num_epochs=200):
             scaler.step(optimizer)
             scaler.update()
 
-            running_loss += loss.item()
+            train_loss += loss.item()
             correct_train += (outputs.argmax(dim=1) == batch_y.argmax(dim=1)).sum().item()
             total_train += batch_y.size(0)
 
-        epoch_loss = running_loss / len(train_loader)
-        epoch_acc = correct_train / total_train
+        epoch_train_loss = train_loss / len(train_loader)
+        epoch_train_acc = correct_train / total_train
 
         model.eval()
-        running_test_loss = 0.0
+        val_loss = 0.0
         correct_test = 0
         with torch.no_grad():
-            for b_x, b_y in test_loader:
+            for b_x, b_y in val_loader:
                 b_x, b_y = b_x.to(device), b_y.to(device)
                 with torch.cuda.amp.autocast():
                     out = model(b_x)
-                    running_test_loss += criterion(out, b_y).item() * b_x.size(0)
+                    val_loss += criterion(out, b_y).item() * b_x.size(0)
                     correct_test += (out.argmax(1) == b_y.argmax(1)).sum().item()
 
-        test_loss = running_test_loss / len(test_loader.dataset)
-        test_acc = correct_test / len(test_loader.dataset)
+        epoch_val_loss = val_loss / len(val_loader.dataset)
+        epoch_val_acc = correct_test / len(val_loader.dataset)
 
-        history['train_loss'].append(epoch_loss)
-        history['test_loss'].append(test_loss)
-        history['train_acc'].append(epoch_acc)
-        history['test_acc'].append(test_acc)
+        history['train_loss'].append(epoch_train_loss)
+        history['val_loss'].append(epoch_val_loss)
+        history['train_acc'].append(epoch_train_acc)
+        history['val_acc'].append(epoch_val_acc)
 
-        # 1. Primary Metric: Test Accuracy | 2. Secondary Metric: Test Loss (tie-breaker)
-        current_score = (test_acc, -test_loss)  # Lower loss is better, hence negative for sorting
+        metrics = [epoch + 1, epoch_train_loss, epoch_train_acc, epoch_val_loss, epoch_val_acc]
 
-        if current_score > best_overall_score:
-            best_overall_score = current_score
-            torch.save(model.state_dict(), final_best_path)
+        with open(csv_log_path, "a") as f:
+            f.write(",".join([f"{m:.4f}" for m in metrics]) + "\n")
 
-        if len(top_3_models) < 3 or current_score > top_3_models[0][0]:
-            current_epoch = epoch + 1
-            current_model_path = f"{model_prefix}{current_epoch}.pth"
+        print(f"Epoch {epoch + 1}/{num_epochs} | Train Loss: {metrics[1]:.4f} | Train Acc: {metrics[2]:.4f} | Val Loss: {metrics[3]:.4f} | Val Acc: {metrics[4]:.4f}")
 
-            torch.save(model.state_dict(), current_model_path)
-            # Store accuracy, loss (raw), epoch, and path
-            top_3_models.append((current_score, current_epoch, current_model_path))
-
-            # Sort by the score tuple (Accuracy first, then lower loss)
-            top_3_models.sort(key=lambda x: x[0])
-
-            if len(top_3_models) > 3:
-                _, _, worst_path = top_3_models.pop(0)
-                if os.path.exists(worst_path):
-                    os.remove(worst_path)
-
-        if test_loss < best_test_loss:
-            best_test_loss = test_loss
-            early_stop_counter = 0  # Reset if we find a new best loss
-        else:
-            early_stop_counter += 1  # Increment if loss doesn't improve
-
-        if early_stop_counter >= patience:
-            print(f'\nEarly stopping triggered at epoch {epoch + 1}!')
+        early_stopping(epoch_val_loss, model, epoch)
+        if early_stopping.early_stop:
+            print(f"Early stopping triggered at Epoch {epoch + 1}")
             break
-
-        # if (epoch + 1) % 10 == 0:
-        #     print(f'Epoch [{epoch + 1}/{num_epochs}] Loss: {loss.item():.4f} Test Acc: {test_acc.item():.4f}')
-        print(f'Epoch [{epoch + 1}/{num_epochs}] Loss: {loss.item():.4f} Test Acc: {test_acc:.4f}')
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -153,8 +168,8 @@ def train(model, model_type, train_loader, test_loader, device, num_epochs=200):
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
     plt.plot(history['train_loss'], label='Train Loss')
-    plt.plot(history['test_loss'], label='Test Loss')
-    plt.title('Training & Testing Loss')
+    plt.plot(history['val_loss'], label='Val Loss')
+    plt.title(f'{model_type} Loss Curve')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend()
@@ -162,8 +177,8 @@ def train(model, model_type, train_loader, test_loader, device, num_epochs=200):
 
     plt.subplot(1, 2, 2)
     plt.plot(history['train_acc'], label='Train Accuracy')
-    plt.plot(history['test_acc'], label='Test Accuracy')
-    plt.title('Training & Testing Accuracy')
+    plt.plot(history['val_acc'], label='Val Accuracy')
+    plt.title(f'{model_type} Accuracy Curve')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
     plt.legend()
@@ -175,11 +190,14 @@ def train(model, model_type, train_loader, test_loader, device, num_epochs=200):
 
     plt.show()
 
-    print("\nTraining Complete.")
-    print(f"Total Training Time: {total_time:.2f} seconds")
-    print("Top 3 Models saved (by epoch):")
-    for acc, ep, path in sorted(top_3_models, key=lambda x: x[1]):
-        print(f"- {path} (Accuracy: {acc[0]:.4f})")
+    print("\n" + "=" * 60)
+    print(f"FINAL SUMMARY: {model_type}")
+    print(f"Total Time: {total_time:.2f}s")
+    print(f"Best Epoch Saved: {early_stopping.best_epoch}")
+    print(f"Model Path: {early_stopping.path}")
+    print(f"CSV Metrics: {csv_log_path}")
+    print(f"Text Log: {log_file_path}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
@@ -189,17 +207,36 @@ if __name__ == "__main__":
     # MODEL_TYPE = "CTRGCN"
     MODEL_TYPE = "SKATEFORMER"
 
+    # LSTM, STGCN, CTRGCN SETTING
+    LR = 1e-3
+    WEIGHT_DECAY = 0
+    PATIENCE = 20
+    DELTA = 0.001
+    WARM_UP = 50
+    EPOCH = 200
+    BATCH_SIZE = 16
+
+    # SkateFormer SETTING
+    # LR = 5e-4
+    # BATCH_SIZE = 32
+
+    data_dir = "datasets_npy"
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    X_raw = np.load('X_TRAIN_3.npy')
-    y_raw = np.load('y_TRAIN_3.npy')
-    gestures = np.load("gestures_3.npy")
+    X_train_raw = np.load(f'{data_dir}/X_train.npy')
+    y_train_raw = np.load(f'{data_dir}/y_train.npy')
+    X_val_raw = np.load(f'{data_dir}/X_val.npy')
+    y_val_raw = np.load(f'{data_dir}/y_val.npy')
+    gestures = np.load(f'{data_dir}/gestures.npy')
 
     if MODEL_TYPE == "LSTM":
-        X_tensor = torch.tensor(X_raw, dtype=torch.float32)
-        model = CustomLSTM(input_size=258, hidden_size=64, num_classes=len(gestures)).to(device)
+        X_train = torch.tensor(X_train_raw, dtype=torch.float32)
+        X_val = torch.tensor(X_val_raw, dtype=torch.float32)
+        model = CustomLSTM(input_size=258, hidden_size=128, num_classes=len(gestures)).to(device)
     else:
-        X_tensor = torch.tensor(reshape_for_stgcn(X_raw), dtype=torch.float32)
+        X_train = torch.tensor(reshape_for_stgcn(X_train_raw), dtype=torch.float32)
+        X_val = torch.tensor(reshape_for_stgcn(X_val_raw), dtype=torch.float32)
         if MODEL_TYPE == "STGCN":
             model = STGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
         elif MODEL_TYPE == "CTRGCN":
@@ -210,14 +247,11 @@ if __name__ == "__main__":
             print("Model Not Found !")
             exit()
 
-    y_tensor = torch.tensor(y_raw, dtype=torch.long)
-    y_one_hot = F.one_hot(y_tensor).float()
-    X_train, X_test, y_train, y_test = train_test_split(X_tensor, y_one_hot, test_size=0.05)
+    y_train = F.one_hot(torch.tensor(y_train_raw, dtype=torch.long), num_classes=len(gestures)).float()
+    y_val = F.one_hot(torch.tensor(y_val_raw, dtype=torch.long), num_classes=len(gestures)).float()
 
-    batch_size = 16  # Adjust this (16 or 32) based on your memory
-    train_data = TensorDataset(X_train, y_train)
-    test_data = TensorDataset(X_test, y_test)
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_data, batch_size=8)
+    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=8)
 
-    train(model, MODEL_TYPE, train_loader, test_loader, device)
+    train(model, MODEL_TYPE, train_loader, val_loader, device, num_epochs=EPOCH)
+
