@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib
 matplotlib.use("TkAgg")
@@ -82,9 +81,17 @@ class EarlyStopping:
 
 
 def train(model, model_type, train_loader, val_loader, device, num_epochs=200):
-    optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-    criterion = nn.CrossEntropyLoss()
+
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    # optimizer = optim.SGD(model.parameters(), lr=LR, momentum=0.9, nesterov=True, weight_decay=WEIGHT_DECAY)
+
+    # Label smoothing=0.1 helps the model learn that signs are related
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     scaler = torch.amp.GradScaler('cuda')
+
+    # OneCycleLR: Provides a 'warmup' phase and a 'cool down' phase.
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=LR, steps_per_epoch=len(train_loader), epochs=num_epochs)
+    # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60, 90], gamma=0.1)
 
     model_dir = f'./model/{model_type}/'
     if not os.path.exists(model_dir):
@@ -122,9 +129,11 @@ def train(model, model_type, train_loader, val_loader, device, num_epochs=200):
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            # Scheduler for OneCycleLR
+            scheduler.step()
 
             train_loss += loss.item()
-            correct_train += (outputs.argmax(dim=1) == batch_y.argmax(dim=1)).sum().item()
+            correct_train += (outputs.argmax(dim=1) == batch_y).sum().item()
             total_train += batch_y.size(0)
 
         epoch_train_loss = train_loss / len(train_loader)
@@ -139,7 +148,7 @@ def train(model, model_type, train_loader, val_loader, device, num_epochs=200):
                 with torch.cuda.amp.autocast():
                     out = model(b_x)
                     val_loss += criterion(out, b_y).item() * b_x.size(0)
-                    correct_test += (out.argmax(1) == b_y.argmax(1)).sum().item()
+                    correct_test += (out.argmax(1) == b_y).sum().item()
 
         epoch_val_loss = val_loss / len(val_loader.dataset)
         epoch_val_acc = correct_test / len(val_loader.dataset)
@@ -155,6 +164,9 @@ def train(model, model_type, train_loader, val_loader, device, num_epochs=200):
             f.write(",".join([f"{m:.4f}" for m in metrics]) + "\n")
 
         print(f"Epoch {epoch + 1}/{num_epochs} | Train Loss: {metrics[1]:.4f} | Train Acc: {metrics[2]:.4f} | Val Loss: {metrics[3]:.4f} | Val Acc: {metrics[4]:.4f}")
+
+        # Scheduler for MultiStepLR
+        # scheduler.step()
 
         early_stopping(epoch_val_loss, model, epoch)
         if early_stopping.early_stop:
@@ -207,18 +219,22 @@ if __name__ == "__main__":
     # MODEL_TYPE = "CTRGCN"
     MODEL_TYPE = "SKATEFORMER"
 
-    # LSTM, STGCN, CTRGCN SETTING
+    # SETTING
     LR = 1e-3
-    WEIGHT_DECAY = 0
+    WEIGHT_DECAY = 0.05
     PATIENCE = 20
     DELTA = 0.001
     WARM_UP = 50
     EPOCH = 200
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
 
     # SkateFormer SETTING
     # LR = 5e-4
-    # BATCH_SIZE = 32
+
+    # STGCN SGD SETTING (with MultiStepLR)
+    # LR = 0.1
+    # WEIGHT_DECAY = 1e-4
+    # PATIENCE = 40
 
     data_dir = "datasets_npy"
 
@@ -247,11 +263,10 @@ if __name__ == "__main__":
             print("Model Not Found !")
             exit()
 
-    y_train = F.one_hot(torch.tensor(y_train_raw, dtype=torch.long), num_classes=len(gestures)).float()
-    y_val = F.one_hot(torch.tensor(y_val_raw, dtype=torch.long), num_classes=len(gestures)).float()
+    y_train = torch.tensor(y_train_raw, dtype=torch.long)
+    y_val = torch.tensor(y_val_raw, dtype=torch.long)
 
     train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=8)
 
     train(model, MODEL_TYPE, train_loader, val_loader, device, num_epochs=EPOCH)
-

@@ -1,7 +1,6 @@
 import os
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 import pandas as pd
@@ -35,9 +34,9 @@ def evaluate(model, test_loader, gestures, model_type, model_path):
             with torch.amp.autocast(device_type='cuda'):
                 outputs = model(b_x)
                 val_loss += criterion(outputs, b_y).item() * b_x.size(0)
-                correct_test += (outputs.argmax(1) == b_y.argmax(1)).sum().item()
+                correct_test += (outputs.argmax(1) == b_y).sum().item()
                 all_preds.append(outputs.argmax(dim=1).cpu().numpy())
-                all_trues.append(b_y.argmax(dim=1).cpu().numpy())
+                all_trues.append(b_y.cpu().numpy())
 
         test_loss = val_loss / len(test_loader.dataset)
         accuracy = correct_test / len(test_loader.dataset)
@@ -76,7 +75,12 @@ def evaluate(model, test_loader, gestures, model_type, model_path):
 
 
 def summary():
-    model_types = ['LSTM', 'STGCN', 'CTRGCN', 'SKATEFORMER']
+    model_dir = './model'
+    if os.path.exists(model_dir):
+        # Get all entries in the directory that are folders
+        model_types = [d for d in os.listdir(model_dir) if os.path.isdir(os.path.join(model_dir, d))]
+    else:
+        model_types = []
     summary_data = []
 
     for mt in model_types:
@@ -145,7 +149,7 @@ if __name__ == "__main__":
             print("Model Not Found !")
             exit()
 
-    y_test = F.one_hot(torch.tensor(y_test_raw, dtype=torch.long), num_classes=len(gestures)).float().to(device)
+    y_test = torch.tensor(y_test_raw, dtype=torch.long)
 
     test_loader = DataLoader(TensorDataset(X_test, y_test), batch_size=16)
 

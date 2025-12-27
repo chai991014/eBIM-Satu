@@ -30,7 +30,7 @@ class CustomLSTM(nn.Module):
 
 
 class STGCNLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, adjacency_matrix):
+    def __init__(self, in_channels, out_channels, adjacency_matrix, dropout=0.2):
         super(STGCNLayer, self).__init__()
         self.A = nn.Parameter(torch.from_numpy(adjacency_matrix).float(), requires_grad=False)
         self.gcn = nn.Conv2d(in_channels, out_channels, kernel_size=1)
@@ -39,6 +39,7 @@ class STGCNLayer(nn.Module):
             nn.ReLU(),
             nn.Conv2d(out_channels, out_channels, kernel_size=(3, 1), padding=(1, 0)),
             nn.BatchNorm2d(out_channels),
+            nn.Dropout(dropout),
             nn.ReLU()
         )
 
@@ -55,6 +56,7 @@ class STGCNModel(nn.Module):
         self.layer1 = STGCNLayer(3, 64, adjacency_matrix)
         self.layer2 = STGCNLayer(64, 128, adjacency_matrix)
         self.layer3 = STGCNLayer(128, 256, adjacency_matrix)
+        self.drop = nn.Dropout(0.2)
         self.fc = nn.Linear(256, num_classes)
 
     def forward(self, x):
@@ -63,6 +65,7 @@ class STGCNModel(nn.Module):
         x = self.layer3(x)
         x = F.avg_pool2d(x, x.size()[2:])
         x = x.view(x.size(0), -1)
+        x = self.drop(x)
         return self.fc(x)
 
 
@@ -106,7 +109,7 @@ class CTRGC(nn.Module):
 
 
 class CTRGCNLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, adjacency_matrix):
+    def __init__(self, in_channels, out_channels, adjacency_matrix, dropout=0.2):
         super(CTRGCNLayer, self).__init__()
         self.A = nn.Parameter(torch.from_numpy(adjacency_matrix).float(), requires_grad=False)
         self.gc = CTRGC(in_channels, out_channels)
@@ -115,6 +118,7 @@ class CTRGCNLayer(nn.Module):
             nn.ReLU(),
             nn.Conv2d(out_channels, out_channels, kernel_size=(3, 1), padding=(1, 0)),
             nn.BatchNorm2d(out_channels),
+            nn.Dropout(dropout),
             nn.ReLU()
         )
 
@@ -130,6 +134,7 @@ class CTRGCNModel(nn.Module):
         self.layer1 = CTRGCNLayer(3, 64, adjacency_matrix)
         self.layer2 = CTRGCNLayer(64, 128, adjacency_matrix)
         self.layer3 = CTRGCNLayer(128, 256, adjacency_matrix)
+        self.drop = nn.Dropout(0.2)
         self.fc = nn.Linear(256, num_classes)
 
     def forward(self, x):
@@ -138,6 +143,7 @@ class CTRGCNModel(nn.Module):
         x = self.layer3(x)
         x = F.avg_pool2d(x, x.size()[2:])
         x = x.view(x.size(0), -1)
+        x = self.drop(x)
         return self.fc(x)
 
 
