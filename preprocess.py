@@ -1,5 +1,4 @@
 import os
-import sys
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -15,12 +14,6 @@ def mediapipe_detection(image, model):
     image.flags.writeable = True                    # Image is no longer writeable
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)  # Color conversion RGB to BGR
     return image, results
-
-
-def draw_landmarks(image, results):
-    mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS)        # Draw pose connections
-    mp_drawing.draw_landmarks(image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)   # Draw left connections
-    mp_drawing.draw_landmarks(image, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)  # Draw right connections
 
 
 def draw_styled_landmarks(image,results):
@@ -48,42 +41,6 @@ def extract_keypoints(results):
     rh = np.array([[res.x, res.y, res.z] for res in results.right_hand_landmarks.landmark]).flatten() if results.right_hand_landmarks else np.zeros(21*3)
 
     return np.concatenate([pose, lh, rh])
-
-
-def augment_image(image, angle=0, scale=1.0):
-    """
-    Rotates and scales an image around its center.
-    """
-    (h, w) = image.shape[:2]
-    center = (w // 2, h // 2)
-
-    # getRotationMatrix2D handles both rotation and scaling
-    M = cv2.getRotationMatrix2D(center, angle, scale)
-
-    # Apply the transformation
-    augmented_image = cv2.warpAffine(image, M, (w, h))
-    return augmented_image
-
-
-def detect_hand_landmarks(image_path):
-    with mp_holistic.Holistic(min_detection_confidence=0.1, min_tracking_confidence=0.1) as holistic:
-        # Load the image using OpenCV
-        image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        # Make detections
-        image, results = mediapipe_detection(image, holistic)
-
-        # Draw landmarks to the frame
-        draw_styled_landmarks(image, results)
-
-        # Convert the image back to BGR for OpenCV
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-        # Display the image with hand landmarks
-        cv2.imshow('Landmark Detection Verification', image)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
 
 
 def apply_skeletal_shrink(data, shrink_range=(0.20, 0.35)):
@@ -259,13 +216,13 @@ def mix_skeletal_parts(seq_a, seq_b):
     return mixed_seq
 
 
-def process_video_frame(gestures, video_directory, train_dataset_path):
+def process_video_frame(gloss, video_directory, train_dataset_path):
     """
     REMOVED: Internal AUG loop and image-level rotation/scaling.
     Now only processes the 'original' video once to save time.
     """
     with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
-        for ges in gestures:
+        for ges in gloss:
             # Specify the video path
             data_path = os.path.join(video_directory, ges)
             data_video = os.listdir(data_path)
@@ -315,21 +272,17 @@ def process_video_frame(gestures, video_directory, train_dataset_path):
                         np.save(npy_path, res)
 
 
-def compose_train_data(gestures, train_dataset_path, target_samples=150):
+def compose_train_data(gloss, train_dataset_path):
     """
     Includes Automatic Oversampling, Undersampling, Part Mixing, and Shoulder Noise.
     """
-    label_map = {label: num for num, label in enumerate(gestures)}
+    label_map = {label: num for num, label in enumerate(gloss)}
     X_train, y_train = [], []
     X_val, y_val = [], []
     X_test, y_test = [], []
 
-    T_TRAIN = int(target_samples * 0.7)
-    T_VAL = int(target_samples * 0.1)
-    T_TEST = target_samples - (T_TRAIN + T_VAL)
-
-    for gs in gestures:
-        gesture_samples = []
+    for gs in gloss:
+        gloss_samples = []
         class_path = os.path.join(train_dataset_path, gs)
 
         # Load all available 'original' samples for this class
@@ -340,31 +293,40 @@ def compose_train_data(gestures, train_dataset_path, target_samples=150):
             npy_files = sorted([f for f in os.listdir(load_path) if f.endswith('.npy')],
                                key=lambda f: int(''.join(filter(str.isdigit, f))))
             video = [np.load(os.path.join(load_path, npy)) for npy in npy_files]
-            gesture_samples.append(np.array(video))
+            gloss_samples.append(np.array(video))
 
-        num_orig = len(gesture_samples)
-        np.random.shuffle(gesture_samples)
+        num_orig = len(gloss_samples)
+        np.random.shuffle(gloss_samples)
 
-        # Split originals: 80% to train pool, 10% to val pool, 10% to test pool
-        idx80 = max(1, int(num_orig * 0.8))
-        idx90 = max(idx80 + 1, int(num_orig * 0.9))
+        if num_orig < 40:
+            idx_train = int(num_orig * 0.5)
+            idx_val = idx_train + max(2, int(num_orig * 0.2))
+        else:
+            idx_train = int(num_orig * 0.7)
+            idx_val = idx_train + int(num_orig * 0.1)
 
-        pool_train = gesture_samples[:idx80]
-        pool_val = gesture_samples[idx80:idx90]
-        pool_test = gesture_samples[idx90:]
+        pool_train = gloss_samples[:idx_train]
+        pool_val = gloss_samples[idx_train:idx_val]
+        pool_test = gloss_samples[idx_val:]
 
-        def augment_to_target(pool, target):
-            out = []
-            while len(out) < target:
+        def augment_to_target(pool, target=100):
+            out = [np.copy(p) for p in pool]
+            if not pool:
+                return out
+
+            bias_correction_count = int(len(pool) * 0.2)
+            effective_target = max(target, len(pool) + bias_correction_count)
+
+            while len(out) < effective_target:
                 idx = np.random.randint(0, len(pool))
                 aug_sample = np.copy(pool[idx])
                 # --- 1. ANATOMICAL DIVERSITY (Body Proportions) ---
                 # Applied first to set the 'base' skeleton shape
-                if np.random.random() < 0.4:
+                if np.random.random() < 0.7:
                     aug_sample = adjust_shoulder_width(aug_sample)
-                if np.random.random() < 0.4:
+                if np.random.random() < 0.7:
                     aug_sample = adjust_arm_length(aug_sample)
-                if np.random.random() < 0.3:  # Reduced slightly to prevent over-distortion
+                if np.random.random() < 0.5:  # Reduced slightly to prevent over-distortion
                     aug_sample = adjust_torso_height(aug_sample)
 
                 # --- 2. AGE ADAPTATION (Global Scale) ---
@@ -373,7 +335,7 @@ def compose_train_data(gestures, train_dataset_path, target_samples=150):
 
                 # --- 3. MOVEMENT STYLE (Part Mixing) ---
                 # Swaps movements between two skeletons in the same pool
-                if np.random.random() < 0.5:
+                if len(pool) < 30 and np.random.random() < 0.5:
                     partner_idx = np.random.randint(0, len(pool))
                     aug_sample = mix_skeletal_parts(aug_sample, pool[partner_idx])
 
@@ -387,16 +349,17 @@ def compose_train_data(gestures, train_dataset_path, target_samples=150):
                 out.append(aug_sample)
             return out
 
-        X_train.extend(augment_to_target(pool_train, T_TRAIN))
-        y_train.extend([label_map[gs]] * T_TRAIN)
+        aug_train = augment_to_target(pool_train)
+        X_train.extend(aug_train)
+        y_train.extend([label_map[gs]] * len(aug_train))
 
-        X_val.extend(augment_to_target(pool_val, T_VAL))
-        y_val.extend([label_map[gs]] * T_VAL)
+        X_val.extend(pool_val)
+        y_val.extend([label_map[gs]] * len(pool_val))
 
-        X_test.extend(augment_to_target(pool_test, T_TEST))
-        y_test.extend([label_map[gs]] * T_TEST)
+        X_test.extend(pool_test)
+        y_test.extend([label_map[gs]] * len(pool_test))
 
-        print(f"Class {gs}: Split created (Train:{T_TRAIN}, Val:{T_VAL}, Test:{T_TEST})")
+        print(f"Class {gs}: Split created (Train:{len(aug_train)}, Val:{len(pool_val)}, Test:{len(pool_test)})")
 
     save_dir = "datasets_npy"
     if not os.path.exists(save_dir):
@@ -411,7 +374,7 @@ def compose_train_data(gestures, train_dataset_path, target_samples=150):
     np.save(os.path.join(save_dir, 'X_test.npy'), np.array(X_test, dtype=np.float32))
     np.save(os.path.join(save_dir, 'y_test.npy'), np.array(y_test, dtype=np.int32))
 
-    np.save(os.path.join(save_dir, 'gestures.npy'), np.array(gestures))
+    np.save(os.path.join(save_dir, 'gloss.npy'), np.array(gloss))
 
     print(f"Dataset successfully saved to {save_dir}/")
     print(f"X_train shape: {np.array(X_train).shape} | Total Samples: {len(X_train)}")
@@ -425,11 +388,11 @@ if __name__ == "__main__":
     video_directory = 'BIM_Dataset_V3'
 
     # Get all file names in the directory
-    gestures_files = os.listdir(video_directory)
+    gloss_files = os.listdir(video_directory)
 
-    # Specify the gestures
-    gestures = np.array(gestures_files)
-    # print(gestures)
+    # Specify the gloss
+    gloss = np.array(gloss_files)
+    # print(gloss)
 
     # Specify your path to store landmarks files
     train_dataset_path = 'datasets'
@@ -437,7 +400,7 @@ if __name__ == "__main__":
     # _stderr = sys.stderr
     # with open(os.devnull, 'w') as f:
     #     sys.stderr = f
-    #     process_video_frame(gestures, video_directory, train_dataset_path)
+    #     process_video_frame(gloss, video_directory, train_dataset_path)
     #     sys.stderr = _stderr
 
-    compose_train_data(gestures, train_dataset_path)
+    compose_train_data(gloss, train_dataset_path)

@@ -85,8 +85,13 @@ def train(model, model_type, train_loader, val_loader, device, num_epochs=200):
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     # optimizer = optim.SGD(model.parameters(), lr=LR, momentum=0.9, nesterov=True, weight_decay=WEIGHT_DECAY)
 
+    counts = np.bincount(train_loader.dataset.tensors[1].numpy())
+    weights = 1.0 / np.sqrt(counts + 1e-6)
+    weights = weights / weights.sum() * len(counts)  # Normalize weights
+    class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+
     # Label smoothing=0.1 helps the model learn that signs are related
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1, weight=class_weights)
     scaler = torch.amp.GradScaler('cuda')
 
     # OneCycleLR: Provides a 'warmup' phase and a 'cool down' phase.
@@ -220,21 +225,21 @@ if __name__ == "__main__":
     MODEL_TYPE = "SKATEFORMER"
 
     # SETTING
-    LR = 1e-3
+    # LR = 1e-3
     WEIGHT_DECAY = 0.05
-    PATIENCE = 20
+    PATIENCE = 15
     DELTA = 0.001
     WARM_UP = 50
     EPOCH = 200
-    BATCH_SIZE = 32
+    BATCH_SIZE = 64
 
     # SkateFormer SETTING
-    # LR = 5e-4
+    LR = 5e-4
 
     # STGCN SGD SETTING (with MultiStepLR)
     # LR = 0.1
     # WEIGHT_DECAY = 1e-4
-    # PATIENCE = 40
+    # PATIENCE = 30
 
     data_dir = "datasets_npy"
 
@@ -244,21 +249,21 @@ if __name__ == "__main__":
     y_train_raw = np.load(f'{data_dir}/y_train.npy')
     X_val_raw = np.load(f'{data_dir}/X_val.npy')
     y_val_raw = np.load(f'{data_dir}/y_val.npy')
-    gestures = np.load(f'{data_dir}/gestures.npy')
+    gloss = np.load(f'{data_dir}/gloss.npy')
 
     if MODEL_TYPE == "LSTM":
         X_train = torch.tensor(X_train_raw, dtype=torch.float32)
         X_val = torch.tensor(X_val_raw, dtype=torch.float32)
-        model = CustomLSTM(input_size=258, hidden_size=128, num_classes=len(gestures)).to(device)
+        model = CustomLSTM(input_size=258, hidden_size=128, num_classes=len(gloss)).to(device)
     else:
         X_train = torch.tensor(reshape_for_stgcn(X_train_raw), dtype=torch.float32)
         X_val = torch.tensor(reshape_for_stgcn(X_val_raw), dtype=torch.float32)
         if MODEL_TYPE == "STGCN":
-            model = STGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
+            model = STGCNModel(num_classes=len(gloss), adjacency_matrix=get_adjacency_matrix()).to(device)
         elif MODEL_TYPE == "CTRGCN":
-            model = CTRGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
+            model = CTRGCNModel(num_classes=len(gloss), adjacency_matrix=get_adjacency_matrix()).to(device)
         elif MODEL_TYPE == "SKATEFORMER":
-            model = SkateFormerModel(num_classes=len(gestures)).to(device)
+            model = SkateFormerModel(num_classes=len(gloss)).to(device)
         else:
             print("Model Not Found !")
             exit()

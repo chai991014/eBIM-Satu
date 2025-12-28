@@ -202,7 +202,7 @@ def verify_augmentation_video(video_path, landmark_folder, output_path, aug_styl
 
 if __name__ == "__main__":
 
-    gesture = "abang"
+    gloss = "abang"
     code = "1_1_1"
     code2 = "2_1_1"
     # AUG_STYLE = "rotate"
@@ -211,13 +211,13 @@ if __name__ == "__main__":
     # AUG_STYLE = "shoulder"
     # AUG_STYLE = "arm"
     # AUG_STYLE = "height"
-    VIDEO_FILE = f'BIM_Dataset_V3/{gesture}/{gesture}_{code}.mp4'
-    LANDMARK_DIR = f'datasets/{gesture}/landmarks_{gesture}_{code}.mp4'
-    PARTNER_DIR = f'datasets/{gesture}/landmarks_{gesture}_{code2}.mp4'  # Optional for Part Mixing
+    VIDEO_FILE = f'BIM_Dataset_V3/{gloss}/{gloss}_{code}.mp4'
+    LANDMARK_DIR = f'datasets/{gloss}/landmarks_{gloss}_{code}.mp4'
+    PARTNER_DIR = f'datasets/{gloss}/landmarks_{gloss}_{code2}.mp4'  # Optional for Part Mixing
 
-    # verify_landmarks(VIDEO_FILE, LANDMARK_DIR, f"landmarks_{gesture}_{code}.mp4")
+    # verify_landmarks(VIDEO_FILE, LANDMARK_DIR, f"landmarks_{gloss}_{code}.mp4")
 
     if code2:
-        verify_augmentation_video(VIDEO_FILE, LANDMARK_DIR, f"landmarks_{gesture}_{code}_MIX_{code2}.mp4", partner_folder=PARTNER_DIR)
+        verify_augmentation_video(VIDEO_FILE, LANDMARK_DIR, f"landmarks_{gloss}_{code}_MIX_{code2}.mp4", partner_folder=PARTNER_DIR)
     else:
-        verify_augmentation_video(VIDEO_FILE, LANDMARK_DIR, f"landmarks_{gesture}_{code}_AUG_{AUG_STYLE}.mp4", aug_style=AUG_STYLE)
+        verify_augmentation_video(VIDEO_FILE, LANDMARK_DIR, f"landmarks_{gloss}_{code}_AUG_{AUG_STYLE}.mp4", aug_style=AUG_STYLE)

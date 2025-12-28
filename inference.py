@@ -18,22 +18,22 @@ from preprocess import mediapipe_detection, draw_styled_landmarks, extract_keypo
 MODEL_TYPE = "SKATEFORMER"
 
 MODEL_PATH = f'./model/{MODEL_TYPE}/best_model.pth'
-GESTURES_PATH = 'datasets_npy/gestures.npy'
+gloss_PATH = 'datasets_npy/gloss.npy'
 # VIDEO_FILE = 'BIM_Dataset_V3/ambil/ambil_07_05_01.mp4'
 VIDEO_FILE = 0  # Real-time webcam inference
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-gestures = np.load(GESTURES_PATH)
+gloss = np.load(gloss_PATH)
 
 # Initialize architecture
 if MODEL_TYPE == "LSTM":
-    model = CustomLSTM(input_size=258, hidden_size=128, num_classes=len(gestures)).to(device)
+    model = CustomLSTM(input_size=258, hidden_size=128, num_classes=len(gloss)).to(device)
 elif MODEL_TYPE == "STGCN":
-    model = STGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
+    model = STGCNModel(num_classes=len(gloss), adjacency_matrix=get_adjacency_matrix()).to(device)
 elif MODEL_TYPE == "CTRGCN":
-    model = CTRGCNModel(num_classes=len(gestures), adjacency_matrix=get_adjacency_matrix()).to(device)
+    model = CTRGCNModel(num_classes=len(gloss), adjacency_matrix=get_adjacency_matrix()).to(device)
 elif MODEL_TYPE == "SKATEFORMER":
-    model = SkateFormerModel(num_classes=len(gestures)).to(device)
+    model = SkateFormerModel(num_classes=len(gloss)).to(device)
 else:
     print("Model Not Found !")
     exit()
@@ -102,7 +102,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             predicted_idx = max_idx.item()
 
             if confidence > threshold:
-                label = gestures[predicted_idx] if predicted_idx < len(gestures) else "Unknown"
+                label = gloss[predicted_idx] if predicted_idx < len(gloss) else "Unknown"
 
                 # Visual feedback on image
                 cv2.rectangle(image, (0, 0), (640, 40), (245, 117, 16), -1)
