@@ -78,8 +78,7 @@ def adjust_shoulder_width(data, intensity=0.04):
     """Simulates broader or narrower shoulders."""
     aug_data = np.copy(data)
     # Randomly decide width change for this sample
-    # shift_x = np.random.uniform(-intensity, intensity)
-    shift_x = - intensity
+    shift_x = np.random.uniform(-intensity, intensity)
     for f in range(aug_data.shape[0]):
         # Left Shoulder (11) moves left/right
         aug_data[f, 11 * 4] -= shift_x
@@ -141,8 +140,7 @@ def adjust_arm_length(data, intensity=0.20):
 def adjust_torso_height(data, intensity=0.05):
     """Simulates a longer or shorter upper body."""
     aug_data = np.copy(data)
-    # shift_y = np.random.uniform(-intensity, intensity)
-    shift_y = - intensity
+    shift_y = np.random.uniform(-intensity, intensity)
     for f in range(aug_data.shape[0]):
         # Move Shoulders, Elbows, and Wrists as a block relative to the hips
         for i in range(11, 23):
@@ -188,8 +186,7 @@ def scale_skeleton(data, scale_range=(0.8, 1.2)):
     """
     Scales the skeleton to simulate signer being closer or further.
     """
-    # scale = np.random.uniform(scale_range[0], scale_range[1])
-    scale = scale_range[1]
+    scale = np.random.uniform(scale_range[0], scale_range[1])
     aug_data = np.copy(data)
 
     # Scale x and y relative to center 0.5
